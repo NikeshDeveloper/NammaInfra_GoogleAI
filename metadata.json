@@ -1,0 +1,6 @@
+{
+  "name": "NammaInfra AI",
+  "description": "A high-performance Civic OS and real-time GovTech dashboard with AI-driven routing and automated complaint classification for Tamil Nadu.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

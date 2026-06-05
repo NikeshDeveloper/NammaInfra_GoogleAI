@@ -122,7 +122,22 @@ export default function CommandCenter({
   
   // Status action states
   const [officialRemarks, setOfficialRemarks] = useState("");
+  const [assignedDept, setAssignedDept] = useState("");
+  const [assignedOfficer, setAssignedOfficer] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+
+  // Synchronise assignment inputs with selected file changes
+  useEffect(() => {
+    if (selectedComplaint) {
+      setAssignedDept(selectedComplaint.assignedDept || "");
+      setAssignedOfficer(selectedComplaint.assignedOfficer || "");
+      setOfficialRemarks(selectedComplaint.officialRemarks || "");
+    } else {
+      setAssignedDept("");
+      setAssignedOfficer("");
+      setOfficialRemarks("");
+    }
+  }, [selectedComplaint]);
 
   // Fetch Audit Logs history
   const fetchAuditLogs = async () => {
@@ -213,6 +228,8 @@ export default function CommandCenter({
         body: JSON.stringify({
           status,
           officialRemarks,
+          assignedDept,
+          assignedOfficer,
           actor: official?.name || "Gov Official"
         })
       });
@@ -228,6 +245,38 @@ export default function CommandCenter({
     } catch (e) {
       console.error("Failed to update status:", e);
       alert("Fail to authenticate status transition.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Update Assignment parameters without changing status
+  const handleUpdateAssignmentOnly = async () => {
+    if (!selectedComplaint) return;
+
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/complaints/${selectedComplaint.id}/status`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          officialRemarks,
+          assignedDept,
+          assignedOfficer,
+          actor: official?.name || "Gov Official"
+        })
+      });
+
+      if (res.ok) {
+        const updated = await res.json();
+        setComplaints(prev => prev.map(c => c.id === updated.id ? updated : c));
+        setSelectedComplaint(updated);
+        alert("Department assignment and official remarks logged successfully!");
+        await fetchComplaints();
+      }
+    } catch (e) {
+      console.error("Failed to register assignment:", e);
+      alert("Fail to preserve assignment properties.");
     } finally {
       setActionLoading(false);
     }
@@ -775,9 +824,9 @@ export default function CommandCenter({
 
                       {/* Action workflow panel for official */}
                       {selectedComplaint.status !== "RESOLVED" && (
-                        <div className="border-t border-[#262626] pt-4 space-y-3">
+                        <div className="border-t border-[#262626] pt-4 space-y-3.5 text-left">
                           <label className="block text-2xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1 font-mono">
-                            <PenTool className="h-3.5 w-3.5 text-[#cca510]" />
+                            <PenTool className="h-7 w-7 text-[#cca510]" />
                             {t.updateStatusLabel}
                           </label>
 
@@ -790,14 +839,79 @@ export default function CommandCenter({
                              className="w-full rounded-xl border border-[#262626] bg-[#050505] p-2.5 text-xs text-white placeholder-slate-600 focus:border-[#cca510]/50 focus:outline-none"
                           />
 
-                          <div className="grid grid-cols-2 gap-2">
+                          {/* DYNAMIC DISPATCH & PROPERTY WORKFORCE ASSIGNMENT CONTROL */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3 bg-[#050505] rounded-xl border border-[#262626]">
+                            <div className="space-y-1">
+                              <label className="block text-[9px] font-mono text-slate-400 font-bold uppercase">
+                                Designated Division & Dept
+                              </label>
+                              <select
+                                id="assign-dept-select"
+                                value={assignedDept}
+                                onChange={(e) => setAssignedDept(e.target.value)}
+                                className="w-full rounded-lg border border-[#262626] bg-[#111111] px-2 py-1.5 text-xs text-white focus:border-[#cca510]/50 focus:outline-none cursor-pointer"
+                              >
+                                <option value="">Select Department...</option>
+                                <option value="GCC Solid Waste Management (SWM)">GCC Solid Waste Management (SWM)</option>
+                                <option value="Chennai Corporation Public Works (PWD)">Chennai Corporation Public Works (PWD)</option>
+                                <option value="Chennai Metro Water Sewerage (CMWSSB)">Chennai Metro Water Sewerage (CMWSSB)</option>
+                                <option value="Greater Chennai Corporation (GCC) Parks & Playgrounds">GCC Parks & Playgrounds</option>
+                                <option value="TNGov Highways & Infrastructure Dept">TNGov Highways & Infrastructure Dept</option>
+                                <option value="TANGEDCO Strom-damage & Electrical Grid Control">TANGEDCO Strom-damage Control</option>
+                              </select>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="block text-[9px] font-mono text-slate-400 font-bold uppercase">
+                                Designee Officer / Engineer
+                              </label>
+                              <div className="flex gap-1.5">
+                                <input
+                                  id="assign-officer-input"
+                                  type="text"
+                                  placeholder="e.g. Er. S. Mohan"
+                                  value={assignedOfficer}
+                                  onChange={(e) => setAssignedOfficer(e.target.value)}
+                                  className="flex-1 rounded-lg border border-[#262626] bg-[#111111] px-2 py-1.5 text-xs text-white focus:border-[#cca510]/50 focus:outline-none placeholder-slate-600 font-sans"
+                                />
+                                <select
+                                  id="assign-officer-preset"
+                                  onChange={(e) => {
+                                    if (e.target.value) setAssignedOfficer(e.target.value);
+                                  }}
+                                  className="rounded-lg border border-[#262626] bg-[#111111] px-1 text-slate-400 focus:outline-none text-[10px] cursor-pointer"
+                                  defaultValue=""
+                                >
+                                  <option value="" disabled>Presets</option>
+                                  <option value="Er. S. Mohan Kumar (Zonal Supt.)">Er. S. Mohan</option>
+                                  <option value="Er. Priya Ranganathan (Chief Auditor)">Er. P. Ranganathan</option>
+                                  <option value="Er. Rajesh Chandrasekhar (Chief Officer)">Er. R. Chandrasekhar</option>
+                                  <option value="Er. G. Anantha Ramakrishnan (Lead)">Er. G. Ramakrishnan</option>
+                                </select>
+                              </div>
+                            </div>
+
+                            <div className="col-span-1 md:col-span-2 pt-1">
+                              <button
+                                id="save-assignment-btn"
+                                type="button"
+                                disabled={actionLoading}
+                                onClick={handleUpdateAssignmentOnly}
+                                className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#262626] hover:bg-slate-700 text-slate-300 hover:text-white py-1.5 text-[10px] font-bold uppercase transition-all border border-slate-700 font-sans cursor-pointer"
+                              >
+                                {actionLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save Assignment & Remarks"}
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-[#262626]/50">
                             {selectedComplaint.status === "PENDING" && (
                               <button
                                 id="status-inprogress-btn"
                                 type="button"
                                 disabled={actionLoading}
                                 onClick={() => handleUpdateStatus("IN_PROGRESS")}
-                                className="w-full inline-flex items-center justify-center rounded-xl bg-[#262626] hover:bg-slate-700 disabled:bg-slate-900 text-slate-300 hover:text-white py-2 text-[10px] font-bold uppercase transition-all border border-slate-700"
+                                className="w-full inline-flex items-center justify-center rounded-xl bg-[#262626] hover:bg-slate-700 disabled:bg-slate-900 text-slate-300 hover:text-white py-2 text-[10px] font-bold uppercase transition-all border border-slate-700 cursor-pointer font-sans"
                               >
                                 {actionLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t.markInProg}
                               </button>
@@ -808,7 +922,7 @@ export default function CommandCenter({
                               type="button"
                               disabled={actionLoading}
                               onClick={() => handleUpdateStatus("RESOLVED")}
-                              className={`inline-flex items-center justify-center rounded-xl py-2 text-[10px] font-bold uppercase transition-all border ${
+                              className={`inline-flex items-center justify-center rounded-xl py-2 text-[10px] font-bold uppercase transition-all border cursor-pointer font-sans ${
                                 selectedComplaint.status === "PENDING" 
                                   ? "col-span-1 bg-[#cca510] hover:bg-[#a37c0b] text-black border-[#cca510]" 
                                   : "col-span-2 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white border-emerald-600"

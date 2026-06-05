@@ -127,10 +127,27 @@ export default function CitizenPortal({
 }: CitizenPortalProps) {
   const t = TRANSLATIONS[language];
 
+  // Citizen session/profile state
+  const [citizenSession, setCitizenSession] = useState<{ name: string; phone: string } | null>(() => {
+    const saved = localStorage.getItem("tcos_citizen_session");
+    try {
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  // Dual view scope switcher (default to public directory so they see existing complaints, but can filter down)
+  const [viewScope, setViewScope] = useState<"MY_REPORTS" | "PUBLIC_DIRECTORY">("PUBLIC_DIRECTORY");
+
+  // Input states for login panel
+  const [loginName, setLoginName] = useState("");
+  const [loginPhone, setLoginPhone] = useState("");
+
   // Form states
   const [description, setDescription] = useState("");
-  const [reporterName, setReporterName] = useState("");
-  const [reporterPhone, setReporterPhone] = useState("");
+  const [reporterName, setReporterName] = useState(citizenSession?.name || "");
+  const [reporterPhone, setReporterPhone] = useState(citizenSession?.phone || "");
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
   const [gpsLoading, setGpsLoading] = useState(false);
@@ -154,14 +171,26 @@ export default function CitizenPortal({
   // Selected Representative Ward selection state
   const [selectedRepWard, setSelectedRepWard] = useState("Ward 110 - T. Nagar");
 
+  // Keep reporter details in sync with authenticated session
+  useEffect(() => {
+    if (citizenSession) {
+      setReporterName(citizenSession.name);
+      setReporterPhone(citizenSession.phone);
+    }
+  }, [citizenSession]);
+
   // Dynamic citizen-only filter
-  const citizenComplaints = complaints.filter(
-    (c) => 
-      c.reporterName === reporterName || 
-      c.reporterPhone === reporterPhone || 
-      c.id === "COMP-005" || 
-      c.id === "COMP-001" // Auto seed some for overview
-  );
+  const citizenComplaints = complaints.filter((c) => {
+    if (viewScope === "PUBLIC_DIRECTORY") {
+      return true; // Admins / public exploration directory map view
+    }
+    // "One user's complaints should not be visible to another citizen"
+    if (!citizenSession) return false;
+    return (
+      (c.reporterName && c.reporterName.toLowerCase() === citizenSession.name.toLowerCase()) ||
+      c.reporterPhone === citizenSession.phone
+    );
+  });
 
   // Live RAG database similarity lookup on debounced user description input
   useEffect(() => {
@@ -277,6 +306,17 @@ export default function CitizenPortal({
     e.preventDefault();
     if (!description.trim()) return;
 
+    // SLA PDF Requirement: Validate inputs (photo is required), show error alerts
+    if (!selectedPresetId && !customImageBase64) {
+      alert("Photo required - Please upload an incident photo or select a category preset.");
+      return;
+    }
+
+    if (!latitude || !longitude) {
+      alert("Location not found – please pick on map or click 'Get Geolocation' to tag coordinates.");
+      return;
+    }
+
     setSubmitting(true);
     setSuccessMessage(null);
 
@@ -298,8 +338,8 @@ export default function CitizenPortal({
         description,
         reporterName: reporterName || "Anonymous Citizen",
         reporterPhone: reporterPhone || "+91 Mobile Unspecified",
-        latitude: latitude || 13.0425, // Fallback center
-        longitude: longitude || 80.2514,
+        latitude: latitude,
+        longitude: longitude,
         imageUrl: finalImageUrl,
         imageBase64: finalBase64
       };
@@ -328,6 +368,36 @@ export default function CitizenPortal({
       alert("Failed to connect with server AI dispatch.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // Submit feedback rating / close out issue
+  const handleSendFeedback = async (complaintId: string, rating: "THUMBS_UP" | "THUMBS_DOWN", comments: string) => {
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          complaintId,
+          rating,
+          comments,
+          userId: citizenSession?.name || "Citizen"
+        })
+      });
+      if (res.ok) {
+        await fetchComplaints();
+        // Dynamic state update for active accordion view sync
+        const freshList = await fetch("/api/complaints").then(r => r.json());
+        if (Array.isArray(freshList)) {
+          setComplaints(freshList);
+          const matched = freshList.find(c => c.id === complaintId);
+          if (matched) {
+            setSelectedComplaint(matched);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Feedback submit failed:", err);
     }
   };
 
@@ -424,11 +494,85 @@ export default function CitizenPortal({
         </div>
       </div>
 
+      {/* CITIZEN OPERATIONAL SPACE & VERIFIED SIGN-IN */}
+      <div className="rounded-3xl border border-[#262626] bg-[#0a0a0a] p-6 relative overflow-hidden font-mono text-left">
+        <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/5 rounded-full blur-[80px] pointer-events-none" />
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="space-y-1">
+            <h3 className="font-display text-sm font-bold text-white flex items-center gap-2">
+              <User className="h-4.5 w-4.5 text-[#cca510]" />
+              Citizen Secure Profile Space
+            </h3>
+            <p className="text-[11px] text-slate-400 font-sans">
+              Authenticate via Name and Phone to bind submissions securely and enforce complete isolation, meeting the data privacy SLA guidelines.
+            </p>
+          </div>
+
+          {citizenSession ? (
+            <div className="flex items-center gap-3 bg-[#050505] p-3 rounded-2xl border border-emerald-500/20">
+              <div className="h-8 w-8 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                <CheckCircle2 className="h-4.5 w-4.5" />
+              </div>
+              <div className="text-left font-mono">
+                <p className="text-xs font-bold text-white leading-none">{citizenSession.name}</p>
+                <p className="text-[9px] text-slate-500 mt-1 leading-none">{citizenSession.phone}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  localStorage.removeItem("tcos_citizen_session");
+                  setCitizenSession(null);
+                  setViewScope("PUBLIC_DIRECTORY");
+                }}
+                className="rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 px-3 py-1.5 text-xs font-semibold font-sans transition-all cursor-pointer"
+              >
+                Disconnect Profile
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <input
+                id="login-name-field"
+                type="text"
+                placeholder="Full Name"
+                value={loginName}
+                onChange={(e) => setLoginName(e.target.value)}
+                className="rounded-xl border border-[#262626] bg-[#050505] px-3.5 py-1.5 text-xs text-white placeholder-slate-600 focus:border-[#cca510]/50 focus:outline-none font-sans"
+              />
+              <input
+                id="login-phone-field"
+                type="text"
+                placeholder="Phone (e.g. +91 9444)"
+                value={loginPhone}
+                onChange={(e) => setLoginPhone(e.target.value)}
+                className="rounded-xl border border-[#262626] bg-[#050505] px-3.5 py-1.5 text-xs text-white placeholder-slate-600 focus:border-[#cca510]/50 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (!loginName.trim() || !loginPhone.trim()) {
+                    alert("Please enter both Name and Phone details to verify session.");
+                    return;
+                  }
+                  const session = { name: loginName.trim(), phone: loginPhone.trim() };
+                  localStorage.setItem("tcos_citizen_session", JSON.stringify(session));
+                  setCitizenSession(session);
+                  setViewScope("MY_REPORTS");
+                }}
+                className="rounded-xl bg-[#cca510] hover:bg-[#a37c0b] text-black px-4 py-1.5 text-xs font-bold uppercase transition-all tracking-wider font-sans cursor-pointer"
+              >
+                Access Profile
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
       
       {/* LEFT COLUMN: QUICK REPORT ISSUES */}
       <div className="lg:col-span-7">
-        <div className="rounded-3xl border border-[#262626] bg-[#0a0a0a] p-6 md:p-8">
+        <div className="rounded-3xl border border-[#262626] bg-[#0a0a0a] p-6 md:p-8 text-left">
           <div className="mb-6">
             <h2 className="font-display text-xl font-bold text-white flex items-center gap-2">
               <Camera className="h-5 w-5 text-[#cca510]" />
@@ -449,9 +593,12 @@ export default function CitizenPortal({
                   id="reporter-name-input"
                   type="text"
                   placeholder="e.g. Arun Kumar"
+                  disabled={!!citizenSession}
                   value={reporterName}
                   onChange={(e) => setReporterName(e.target.value)}
-                  className="w-full rounded-xl border border-[#262626] bg-[#050505] px-3.5 py-2 calc-text text-sm text-white placeholder-slate-600 focus:border-[#cca510]/50 focus:outline-none"
+                  className={`w-full rounded-xl border px-3.5 py-2 text-sm text-white placeholder-slate-600 focus:border-[#cca510]/50 focus:outline-none ${
+                    citizenSession ? "border-emerald-500/20 bg-emerald-500/5 text-slate-300 font-bold" : "border-[#262626] bg-[#050505]"
+                  }`}
                 />
               </div>
               <div>
@@ -463,9 +610,12 @@ export default function CitizenPortal({
                   id="reporter-phone-input"
                   type="text"
                   placeholder="e.g. +91 94440 98765"
+                  disabled={!!citizenSession}
                   value={reporterPhone}
                   onChange={(e) => setReporterPhone(e.target.value)}
-                  className="w-full rounded-xl border border-[#262626] bg-[#050505] px-3.5 py-2 text-sm text-white placeholder-slate-600 focus:border-[#cca510]/50 focus:outline-none"
+                  className={`w-full rounded-xl border px-3.5 py-2 text-sm text-white placeholder-slate-600 focus:border-[#cca510]/50 focus:outline-none ${
+                    citizenSession ? "border-emerald-500/20 bg-emerald-500/5 text-slate-300 font-bold" : "border-[#262626] bg-[#050505]"
+                  }`}
                 />
               </div>
             </div>
@@ -759,8 +909,8 @@ export default function CitizenPortal({
 
       {/* RIGHT COLUMN: REPORTEE HISTORY & OPERATIONS TIMELINE */}
       <div className="lg:col-span-5">
-        <div className="rounded-3xl border border-[#262626] bg-[#0a0a0a] p-6 h-full flex flex-col">
-          <div className="mb-6">
+        <div className="rounded-3xl border border-[#262626] bg-[#0a0a0a] p-6 h-full flex flex-col text-left">
+          <div className="mb-4">
             <h2 className="font-display text-xl font-bold text-white flex items-center gap-2">
               <Layers className="h-5 w-5 text-[#cca510]" />
               {t.activeComplaints}
@@ -770,16 +920,61 @@ export default function CitizenPortal({
             </p>
           </div>
 
+          {/* SLA Directory Switcher (Isolates reports strictly per session) */}
+          <div className="flex gap-2 p-1 bg-[#050505] rounded-xl border border-[#262626] mb-4 font-mono">
+            <button
+              id="scope-public-btn"
+              type="button"
+              onClick={() => setViewScope("PUBLIC_DIRECTORY")}
+              className={`flex-1 text-center py-1.5 rounded-lg text-[10px] font-bold tracking-wider transition-all cursor-pointer uppercase ${
+                viewScope === "PUBLIC_DIRECTORY"
+                  ? "bg-[#cca510] text-black"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              Public Directory
+            </button>
+            <button
+              id="scope-my-btn"
+              type="button"
+              onClick={() => {
+                if (!citizenSession) {
+                  alert("Please authenticate using the Citizen Secure Profile Space login card above!");
+                  return;
+                }
+                setViewScope("MY_REPORTS");
+              }}
+              className={`flex-1 text-center py-1.5 rounded-lg text-[10px] font-bold tracking-wider transition-all cursor-pointer uppercase flex items-center justify-center gap-1 ${
+                viewScope === "MY_REPORTS"
+                  ? "bg-[#cca510] text-black"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              My Reports {citizenSession ? `(${complaints.filter(c => (c.reporterName && c.reporterName.toLowerCase() === citizenSession.name.toLowerCase()) || c.reporterPhone === citizenSession.phone).length})` : ""}
+            </button>
+          </div>
+
           <div className="space-y-3 overflow-y-auto max-h-[500px] flex-1 pr-1">
             {citizenComplaints.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-[#262626] p-8 text-center text-slate-500">
+              <div className="rounded-2xl border border-dashed border-[#262626] p-8 text-center text-slate-500 font-mono">
                 <FileText className="h-8 w-8 mx-auto text-slate-700 mb-2" />
-                <p className="text-xs">{t.noActiveComplaints}</p>
+                <p className="text-xs">{viewScope === "MY_REPORTS" ? "No reports found under your authenticated profile." : t.noActiveComplaints}</p>
+                {viewScope === "MY_REPORTS" && (
+                  <p className="text-[10px] text-slate-600 mt-1.5 pb-1 font-sans">Submit an incident using the form on the left to verify active tracking!</p>
+                )}
               </div>
             ) : (
               citizenComplaints.map((complaint) => {
                 const isSelected = selectedComplaint?.id === complaint.id;
                 
+                // Calculate dynamic age since declaration in hours/days (SLA Monitoring requirement)
+                const createdDate = new Date(complaint.createdAt).getTime();
+                const diffMs = Date.now() - createdDate;
+                const diffHrs = Math.max(1, Math.round(diffMs / (3600 * 1000)));
+                const daysOpen = Math.floor(diffHrs / 24);
+                const ageLabel = daysOpen > 0 ? `${daysOpen}d ${diffHrs % 24}h open` : `${diffHrs}h open`;
+                const isOverdue = complaint.status !== "RESOLVED" && diffHrs > complaint.expectedHours;
+
                 return (
                   <div
                     id={`citation-card-${complaint.id}`}
@@ -823,7 +1018,17 @@ export default function CitizenPortal({
 
                         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400 font-mono border-t border-[#262626]/40 pt-2.5">
                           <span>{complaint.wardName}</span>
-                          <span>{new Date(complaint.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          
+                          {/* SLA Exceeded highlight badge */}
+                          {isOverdue ? (
+                            <span className="text-[9px] font-mono font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded animate-pulse">
+                              OVERDUE ⚠️ ({ageLabel})
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-mono text-slate-400 bg-[#050505] border border-[#262626] px-1.5 py-0.5 rounded">
+                              {ageLabel}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </button>
@@ -871,9 +1076,9 @@ export default function CitizenPortal({
                         <div className="flex items-center justify-between gap-3 text-[10px] bg-[#111111] p-2 rounded-lg border border-[#262626]">
                           <span className="text-slate-400 font-medium">Status:</span>
                           <span className={`font-bold px-2 py-0.5 rounded text-[9px] ${
-                            complaint.status === "PENDING" ? "bg-red-500/10 text-red-400 border border-red-500/30" :
-                            complaint.status === "IN_PROGRESS" ? "bg-amber-500/10 text-amber-400 border border-amber-500/30" :
-                            "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+                            complaint.status === "PENDING" ? "bg-red-500/10 text-red-100 border border-red-500/30" :
+                            complaint.status === "IN_PROGRESS" ? "bg-amber-500/10 text-amber-100 border border-amber-500/30" :
+                            "bg-emerald-500/10 text-emerald-100 border border-emerald-500/30"
                           }`}>
                             {complaint.status === "PENDING" ? t.statusPending :
                              complaint.status === "IN_PROGRESS" ? t.statusInProgress :
@@ -934,6 +1139,72 @@ export default function CitizenPortal({
                               <div className="mt-2 p-2 bg-emerald-950/20 rounded-lg border border-emerald-500/10 text-[10px] text-slate-300 leading-snug">
                                 <span className="font-bold text-[#cca510] block mb-0.5">Official Remarks:</span>
                                 "{complaint.officialRemarks}"
+                              </div>
+                            )}
+
+                            {/* CITIZEN RESOLUTION FEEDBACK WORKSPACE */}
+                            {complaint.status === "RESOLVED" && (
+                              <div className="mt-3 p-3 bg-[#0a0a0a]/50 rounded-xl border border-[#262626] space-y-2.5 text-left font-mono">
+                                <div className="flex items-center gap-1.5 border-b border-[#262626] pb-1.5">
+                                  <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                                  <span className="font-bold text-slate-300 text-2xs uppercase tracking-wider">Citizen Resolution Survey</span>
+                                </div>
+
+                                {complaint.feedbackRating ? (
+                                  <div className="space-y-1">
+                                    <p className="text-2xs uppercase tracking-tight text-emerald-400 font-bold">Feedback Confirmed ✓</p>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-xl">{complaint.feedbackRating === "THUMBS_UP" ? "👍" : "👎"}</span>
+                                      <span className="text-xs text-white font-semibold font-sans">
+                                        {complaint.feedbackRating === "THUMBS_UP" ? "Thumbs Up - Highly Satisfied" : "Thumbs Down - Unsatisfied"}
+                                      </span>
+                                    </div>
+                                    {complaint.feedbackComments && (
+                                      <p className="text-slate-400 text-2xs italic mt-1 font-sans bg-[#050505] p-2 rounded-lg border border-[#262626]">
+                                        "{complaint.feedbackComments}"
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    <p className="text-2xs text-slate-400 font-sans leading-relaxed">
+                                      Please rate this resolution. Submitting updates publishes citizen feedback to the official ledger index.
+                                    </p>
+                                    <div className="flex gap-2.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSendFeedback(complaint.id, "THUMBS_UP", "")}
+                                        className="flex-1 py-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 hover:bg-emerald-500/10 text-emerald-400 text-2xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer font-sans"
+                                      >
+                                        👍 Thumbs Up
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSendFeedback(complaint.id, "THUMBS_DOWN", "")}
+                                        className="flex-1 py-1.5 rounded-lg border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-500 text-2xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer font-sans"
+                                      >
+                                        👎 Thumbs Down
+                                      </button>
+                                    </div>
+
+                                    <div className="space-y-1.5 pt-1">
+                                      <input
+                                        id={`feedback-comments-input-${complaint.id}`}
+                                        type="text"
+                                        placeholder="Type details and press enter..."
+                                        className="w-full rounded-lg border border-[#262626] bg-[#050505] px-2.5 py-1.5 text-2xs text-white placeholder-slate-600 focus:border-[#cca510]/50 focus:outline-none"
+                                        onKeyDown={async (e) => {
+                                          if (e.key === "Enter") {
+                                            const commentVal = (e.target as HTMLInputElement).value;
+                                            if (!commentVal.trim()) return;
+                                            await handleSendFeedback(complaint.id, "THUMBS_UP", commentVal.trim());
+                                          }
+                                        }}
+                                      />
+                                      <p className="text-[8px] text-slate-500 font-sans">Press ENTER inside input block to publish text as Thumbs Up.</p>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>

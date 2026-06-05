@@ -31,6 +31,8 @@ export interface Complaint {
   assignedOfficer?: string;
   assignedDept?: string;
   followersCount?: number;
+  feedbackRating?: 'THUMBS_UP' | 'THUMBS_DOWN' | null;
+  feedbackComments?: string | null;
 }
 
 export interface AuditLog {

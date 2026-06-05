@@ -767,7 +767,7 @@ app.post("/api/complaints", async (req, res) => {
 // 7. PUT update status
 app.put("/api/complaints/:id/status", (req, res) => {
   const { id } = req.params;
-  const { status, officialRemarks, resolvedImageUrl, actor } = req.body;
+  const { status, officialRemarks, resolvedImageUrl, actor, assignedDept, assignedOfficer } = req.body;
 
   const db = loadDB();
   const index = db.complaints.findIndex((c) => c.id === id);
@@ -778,16 +778,32 @@ app.put("/api/complaints/:id/status", (req, res) => {
 
   const item = db.complaints[index];
   const oldStatus = item.status;
-  item.status = status;
+  
+  if (status !== undefined) {
+    item.status = status;
+  }
 
   if (officialRemarks !== undefined) {
     item.officialRemarks = officialRemarks;
   }
 
+  if (assignedDept !== undefined) {
+    item.assignedDept = assignedDept;
+  }
+
+  if (assignedOfficer !== undefined) {
+    item.assignedOfficer = assignedOfficer;
+  }
+
+  // Update pendingWith helper parameter
+  if (item.assignedOfficer || item.assignedDept) {
+    item.pendingWith = `${item.assignedOfficer || "Unassigned Officer"} (${item.assignedDept || "Unassigned Dept"})`;
+  }
+
   if (status === "RESOLVED") {
     item.resolvedAt = new Date().toISOString();
     item.resolvedImageUrl = resolvedImageUrl || "https://images.unsplash.com/photo-1621451537084-482c730e3a0a?auto=format&fit=crop&q=80&w=600";
-  } else {
+  } else if (status !== undefined) {
     item.resolvedAt = null;
     item.resolvedImageUrl = null;
   }
@@ -796,14 +812,59 @@ app.put("/api/complaints/:id/status", (req, res) => {
   saveDB(db);
 
   const actorName = actor || "Gov Official";
+  let auditDetails = `Status modified from [${oldStatus}] to [${item.status}]. Remarks: "${officialRemarks || "N/A"}"`;
+  if (assignedDept || assignedOfficer) {
+    auditDetails += ` | Assigned Dept: "${item.assignedDept || "N/A"}", Officer: "${item.assignedOfficer || "N/A"}"`;
+  }
+
   addAuditLog(
     id,
-    "STATUS_" + status,
+    "STATUS_" + item.status,
     actorName,
-    `Status altered from [${oldStatus}] to [${status}]. Remarks: "${officialRemarks || "N/A"}"`
+    auditDetails
   );
 
   res.json(item);
+});
+
+// 7.5 POST submit feedback after resolution
+app.post("/api/feedback", (req, res) => {
+  const { complaintId, rating, comments, userId } = req.body;
+  if (!complaintId) {
+    return res.status(400).json({ error: "Complaint index index required (complaintId)" });
+  }
+
+  const db = loadDB();
+  const index = db.complaints.findIndex((c) => c.id === complaintId);
+
+  if (index === -1) {
+    return res.status(404).json({ error: "Complaint index not found" });
+  }
+
+  const item = db.complaints[index];
+  
+  let dbRating: 'THUMBS_UP' | 'THUMBS_DOWN' | null = null;
+  if (rating === "THUMBS_UP" || rating === "thumbs-up" || rating === "up" || rating === "👍") {
+    dbRating = "THUMBS_UP";
+  } else if (rating === "THUMBS_DOWN" || rating === "thumbs-down" || rating === "down" || rating === "👎") {
+    dbRating = "THUMBS_DOWN";
+  }
+
+  item.feedbackRating = dbRating;
+  item.feedbackComments = comments || "";
+
+  db.complaints[index] = item;
+  saveDB(db);
+
+  const actor = userId || item.reporterName || "Citizen";
+  addAuditLog(
+    complaintId,
+    "FEEDBACK",
+    actor,
+    `Citizen closure feedback submitted. Rating: [${dbRating || "N/A"}]. Comments: "${comments || "No comments"}"`
+  );
+
+  res.json({ success: true, complaint: item });
 });
 
 // 8. GET leaderboards
@@ -878,4 +939,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;

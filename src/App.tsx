@@ -11,6 +11,7 @@ import { Complaint } from "./types.js";
 import { TRANSLATIONS } from "./utils/lang.js";
 import { Loader2, Landmark, Radio } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { Analytics } from "@vercel/analytics/react";
 
 export default function App() {
   const [language, setLanguage] = useState<"en" | "ta">("en");
@@ -120,6 +121,7 @@ export default function App() {
         </div>
       </footer>
 
+      <Analytics />
     </div>
   );
 }
